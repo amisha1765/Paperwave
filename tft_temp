@@ -1,0 +1,237 @@
+
+#include "pico/stdlib.h"
+#include "hardware/spi.h"
+#include <stdint.h>
+#include "smiley_rgb565.h"
+#include "hydrangea_rgb565.h"
+#define PIN_SCK  18
+#define PIN_MOSI 19
+#define PIN_CS   10
+#define PIN_DC   11
+#define PIN_RST  12
+
+#define WIDTH  480
+#define HEIGHT 320
+
+// Send a command to the display
+void tft_command(uint8_t command)
+{
+    gpio_put(PIN_CS, 0);
+    gpio_put(PIN_DC, 0);
+
+    spi_write_blocking(spi0, &command, 1); //send command byte
+
+    gpio_put(PIN_CS, 1); //chip sel high, stop comm
+}
+
+// Send data to the display
+void tft_data(uint8_t *data, int length)
+{
+    gpio_put(PIN_CS, 0);
+    gpio_put(PIN_DC, 1);
+    spi_write_blocking(spi0, data, length);//send data
+    gpio_put(PIN_CS, 1);
+}
+
+// Initialize the display
+void tft_init()
+{
+    //reset controller
+    gpio_put(PIN_RST, 0);
+    sleep_ms(120);
+
+    gpio_put(PIN_RST, 1);
+    sleep_ms(200);
+
+    // Software reset
+    tft_command(0x01);
+    sleep_ms(150);
+
+    // Unlock extended commands
+    uint8_t unlock1[] = {0xC3};
+    tft_command(0xF0);
+    tft_data(unlock1, 1);
+
+    uint8_t unlock2[] = {0x96};
+    tft_command(0xF0);
+    tft_data(unlock2, 1);
+
+    // Memory access control
+    uint8_t orientation[] = {0x28};
+    tft_command(0x36);
+    tft_data(orientation, 1);
+
+    // RGB565 color format
+    uint8_t pixel_format[] = {0x55};
+    tft_command(0x3A);
+    tft_data(pixel_format, 1);
+
+    // VCOM control
+    uint8_t vcom[] = {0x1C};
+    tft_command(0xC5);
+    tft_data(vcom, 1);
+
+    // Interface control
+    uint8_t interface[] = {0x80};
+    tft_command(0xB0);
+    tft_data(interface, 1);
+
+    // Inversion control
+    uint8_t inversion[] = {0x00};
+    tft_command(0xB4);
+    tft_data(inversion, 1);
+
+    // Display function control
+    uint8_t display_function[] = {0x80, 0x02, 0x3B};
+    tft_command(0xB6);
+    tft_data(display_function, 3);
+
+    // Lock extended commands
+    uint8_t lock1[] = {0x69};
+    tft_command(0xF0);
+    tft_data(lock1, 1);
+
+    uint8_t lock2[] = {0x3C};
+    tft_command(0xF0);
+    tft_data(lock2, 1);
+
+    // Exit sleep mode
+    tft_command(0x11);
+    sleep_ms(150);
+
+    // Display on
+    tft_command(0x29);
+    sleep_ms(150);
+}
+
+// Select the entire screen for drawing
+void tft_partial_window(int x1,int x2, int y1, int y2)
+{
+    //valid coords 0-239 x, 0 to 319 y
+    uint8_t x1_h  = x1>>8;
+    uint8_t x1_l  = x1;
+    uint8_t x2_h  = x2>>8;
+    uint8_t x2_l  = x2;
+    uint8_t y1_h  = y1>>8;
+    uint8_t y1_l  = y1;
+    uint8_t y2_h  = y2>>8;
+    uint8_t y2_l  = y2;
+    uint8_t columns[] = {x1_h, x1_l, x2_h, x2_l};
+    uint8_t rows[] = {y1_h, y1_l, y2_h, y2_l};
+
+    tft_command(0x2A); //column address set
+    tft_data(columns, 4); //2start + 2end = 4
+
+    tft_command(0x2B); //page address set
+    tft_data(rows, 4); //4 bytes
+
+    tft_command(0x2C); //memory write
+}
+
+// Fill screen with an RGB565 color
+void tft_fill(uint16_t color)
+{
+    uint8_t buffer[512];
+
+    for (int i = 0; i < 512; i += 2)
+    {
+        buffer[i] = color >> 8;
+        buffer[i + 1] = color & 0xFF;
+    }
+
+    tft_partial_window(0, 479, 0, 319);
+
+    gpio_put(PIN_CS, 0);
+    gpio_put(PIN_DC, 1);
+
+    int remaining = WIDTH * HEIGHT;
+
+    while (remaining > 0)
+    {
+        int pixels = remaining > 256 ? 256 : remaining;
+
+        spi_write_blocking(spi0, buffer, pixels * 2);
+
+        remaining -= pixels;
+    }
+
+    gpio_put(PIN_CS, 1);
+}
+
+
+void tft_partial_image(const uint16_t *image, int x1,  int x2, int y1, int y2)
+{
+    tft_partial_window(x1, x2, y1, y2);
+    int w_width = x2 -x1 +1;
+    int w_height = y2 -y1 +1;
+
+    uint8_t buffer[512]; //256 pixels = 512 bytes
+    gpio_put(PIN_CS, 0);
+    gpio_put(PIN_DC, 1);
+    for (int i = 0; i < w_width*w_height; i += 256)//300 times
+    {
+        int pix_left = w_width*w_height -i;
+        if (pix_left >256){
+            pix_left = 256;
+        }
+        for (int j = 0; j < pix_left; j++)
+        {
+            uint16_t pixel = image[i + j]; 
+            buffer[j * 2] = pixel >> 8; //upper half
+            buffer[j * 2 + 1] = pixel & 0xFF; //lower half
+        }
+
+        spi_write_blocking(spi0, buffer, pix_left *2); //
+    }
+    gpio_put(PIN_CS, 1);
+}
+
+
+void tft_page_sel(){
+    tft_fill(0xFFFF); // Red screen
+    tft_partial_image(smiley_image,429,479, 0, 319); //title
+    tft_partial_image(smiley_image,10,209, 10, 154); //top left
+    tft_partial_image(smiley_image,220, 419, 10, 154); //top right
+    tft_partial_image(hydrangea_image,220, 419, 165, 309); //bottom left
+    tft_partial_image(hydrangea_image,10, 209, 165, 309); //bottom right
+}
+int main()
+{
+    stdio_init_all();
+
+    spi_init(spi0, 10 * 1000 * 1000);
+    spi_set_format(spi0,8,SPI_CPOL_0,SPI_CPHA_0,SPI_MSB_FIRST);
+
+    gpio_set_function(PIN_SCK, GPIO_FUNC_SPI);
+    gpio_set_function(PIN_MOSI, GPIO_FUNC_SPI);
+
+    gpio_init(PIN_CS);
+    gpio_set_dir(PIN_CS, GPIO_OUT);
+    gpio_put(PIN_CS, 1);
+
+    gpio_init(PIN_DC);
+    gpio_set_dir(PIN_DC, GPIO_OUT);
+
+    gpio_init(PIN_RST);
+    gpio_set_dir(PIN_RST, GPIO_OUT);
+
+    tft_init();
+
+    tft_fill(0xF800); // Red screen
+    //tft_partial_image(smiley_image,120, 359, 0, 319);
+    //tft_partial_image(smiley_image,0,479, 159, 161);
+    tft_partial_image(smiley_image,429,479, 0, 319);
+   // tft_partial_image(smiley_image,214,216, 0, 319); 
+    //215x160
+    //9
+    //205x150
+    tft_partial_image(smiley_image,10,209, 10, 154);
+    tft_partial_image(smiley_image,220, 419, 10, 154);
+    tft_partial_image(hydrangea_image,220, 419, 165, 309);
+    tft_partial_image(hydrangea_image,10, 209, 165, 309);
+
+    while (1)
+    {
+        sleep_ms(100);
+    }
+}
