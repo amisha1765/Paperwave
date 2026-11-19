@@ -105,7 +105,3 @@ TFT: https://cdn-shop.adafruit.com/datasheets/ILI9341.pdf
 
 ## Acknowledgments
 [Recognize individuals, organizations, and resources that contributed to the project.]
-
-## License
-[Specify project license.]
-
